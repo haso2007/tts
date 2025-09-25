@@ -265,8 +265,9 @@ func (c *Client) createTTSRequest(ctx context.Context, req models.TTSRequest) (*
 		locale = parts[0] + "-" + parts[1]
 	}
 
-	// 对文本进行HTML转义，防止XML解析错误
-	escapedText := c.ssmProcessor.EscapeSSML(req.Text)
+	// 先清理 Markdown，再进行 HTML 转义，防止在语音中读出格式符
+	cleanText := c.ssmProcessor.StripMarkdown(req.Text)
+	escapedText := c.ssmProcessor.EscapeSSML(cleanText)
 
 	// 准备SSML内容
 	ssml := fmt.Sprintf(ssmlTemplate, locale, voice, style, rate, pitch, escapedText)
