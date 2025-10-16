@@ -1,25 +1,37 @@
 package utils
 
 import (
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"github.com/gin-gonic/gin"
-	"log"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
-	"unicode/utf8"
+    "context"
+    "crypto/hmac"
+    "crypto/rand"
+    "crypto/sha256"
+    "encoding/base64"
+    "encoding/json"
+    "fmt"
+    "github.com/gin-gonic/gin"
+    "io"
+    "log"
+    "net/http"
+    "net/url"
+    "strings"
+    "time"
+    "unicode/utf8"
 
-	"github.com/google/uuid"
+    "github.com/google/uuid"
 )
 
 var (
-	client = &http.Client{}
+    // endpointHTTPClient 针对获取端点请求的 HTTP 客户端，带合理超时与连接设置
+    endpointHTTPClient = &http.Client{
+        Timeout: 8 * time.Second,
+        Transport: &http.Transport{
+            Proxy:                 http.ProxyFromEnvironment,
+            TLSHandshakeTimeout:   5 * time.Second,
+            ExpectContinueTimeout: 1 * time.Second,
+            IdleConnTimeout:       30 * time.Second,
+            MaxIdleConns:          100,
+        },
+    }
 )
 
 const (
@@ -44,7 +56,7 @@ func generateUserID() string {
 }
 
 // GetEndpoint 获取语音合成服务的端点信息
-func GetEndpoint() (map[string]interface{}, error) {
+func GetEndpoint(ctx context.Context) (map[string]interface{}, error) {
 	signature := Sign(endpointURL)
 	userId := generateUserID()
 	traceId := uuid.New().String()
@@ -57,10 +69,16 @@ func GetEndpoint() (map[string]interface{}, error) {
 		"X-MT-Signature":         signature,
 		"User-Agent":             userAgent,
 		"Content-Type":           "application/json; charset=utf-8",
-		"Content-Length":         "0",
-		"Accept-Encoding":        "gzip",
+        "Content-Length":         "0",
 	}
-	req, err := http.NewRequest("POST", endpointURL, nil)
+    // 每次尝试使用带超时的上下文
+    if ctx == nil {
+        var cancel context.CancelFunc
+        ctx, cancel = context.WithTimeout(context.Background(), 8*time.Second)
+        defer cancel()
+    }
+
+    req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -69,30 +87,51 @@ func GetEndpoint() (map[string]interface{}, error) {
 		req.Header.Set(k, v)
 	}
 
-	headerJson, err := json.Marshal(&headers)
-	log.Printf("GetEndpoint -> url: %s, headers: %v\n", endpointURL, string(headerJson))
+    headerJson, err := json.Marshal(&headers)
+    log.Printf("GetEndpoint -> url: %s, headers: %v\n", endpointURL, string(headerJson))
 
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Println("failed to do request: ", err)
-		return nil, err
-	}
+    // 简单重试机制，缓解临时网络问题
+    var lastErr error
+    backoff := 1 * time.Second
+    for attempt := 1; attempt <= 3; attempt++ {
+        resp, err := endpointHTTPClient.Do(req)
+        if err != nil {
+            lastErr = err
+            log.Printf("failed to do request (attempt %d): %v", attempt, err)
+        } else {
+            // 确保响应体在任何路径都被关闭
+            body := resp.Body
+            if resp.StatusCode != http.StatusOK {
+                // 读取并丢弃响应体，避免连接泄漏
+                io.Copy(io.Discard, body)
+                body.Close()
+                lastErr = fmt.Errorf("failed to get endpoint, status code: %d", resp.StatusCode)
+                log.Printf("get endpoint non-200 (attempt %d): %v", attempt, lastErr)
+            } else {
+                // 正常读取 JSON
+                var result map[string]interface{}
+                dec := json.NewDecoder(body)
+                if err := dec.Decode(&result); err != nil {
+                    body.Close()
+                    lastErr = err
+                    log.Printf("decode endpoint response failed (attempt %d): %v", attempt, err)
+                } else {
+                    body.Close()
+                    log.Println("GetEndpoint <- success get endpoint result: ", result)
+                    return result, nil
+                }
+            }
+        }
 
-	defer resp.Body.Close()
+        // 若未成功且还有剩余尝试次数，则退避后重试
+        if attempt < 3 {
+            time.Sleep(backoff)
+            backoff *= 2
+        }
+    }
 
-	if resp.StatusCode != http.StatusOK {
-		log.Println("failed to get endpoint, status code: ", resp.StatusCode)
-		return nil, fmt.Errorf("failed to get endpoint, status code: %d", resp.StatusCode)
-	}
-
-	var result map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	if err != nil {
-		return nil, err
-	}
-
-	log.Println("GetEndpoint <- success get endpoint result: ", result)
-	return result, nil
+    log.Println("GetEndpoint retries exhausted: ", lastErr)
+    return nil, lastErr
 }
 
 // Sign 生成签名

@@ -87,7 +87,7 @@ func (c *Client) getEndpoint(ctx context.Context) (map[string]interface{}, error
 	c.endpointMu.RUnlock()
 
 	// 获取新的端点信息
-	endpoint, err := utils.GetEndpoint()
+	endpoint, err := utils.GetEndpoint(ctx)
 	if err != nil {
 		log.Printf("获取认证信息失败: %v\n", err)
 		return nil, err
