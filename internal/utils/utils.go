@@ -40,6 +40,8 @@ const (
 	clientVersion        = "4.0.530a 5fe1dc6c"
 	homeGeographicRegion = "zh-Hans-CN"
 	voiceDecodeKey       = "oik6PdDdMnOXemTbwvMn9de/h9lFnfBaCWbGMMZqqoSaQaqUOqjVGm5NqsmjcBI1x+sS9ugjB55HEJWRiFXYFw=="
+	// 使用固定的 UserId，避免微软服务认为频繁切换客户端
+	fixedUserId          = "0f04d16a175c411e"
 )
 
 func generateUserID() string {
@@ -57,19 +59,19 @@ func generateUserID() string {
 
 // GetEndpoint 获取语音合成服务的端点信息
 func GetEndpoint(ctx context.Context) (map[string]interface{}, error) {
-	signature := Sign(endpointURL)
-	userId := generateUserID()
 	traceId := uuid.New().String()
+	signature := Sign(endpointURL)
 	headers := map[string]string{
 		"Accept-Language":        "zh-Hans",
 		"X-ClientVersion":        clientVersion,
-		"X-UserId":               userId,
+		"X-UserId":               fixedUserId,
 		"X-HomeGeographicRegion": homeGeographicRegion,
 		"X-ClientTraceId":        traceId,
 		"X-MT-Signature":         signature,
 		"User-Agent":             userAgent,
 		"Content-Type":           "application/json; charset=utf-8",
-        "Content-Length":         "0",
+		"Content-Length":         "0",
+		"Accept-Encoding":        "gzip",
 	}
     // 每次尝试使用带超时的上下文
     if ctx == nil {
