@@ -66,6 +66,9 @@ function escapeBasicXml(unsafe) {
   });
 }
 
+// Matches emoji-style icons that TTS engines tend to read aloud.
+const emojiIconPattern = /(?:[0-9#*]\uFE0F?\u20E3|[\u00A9\u00AE\u203C\u2049\u2122\u2139\u2300-\u23FF\u2600-\u27BF\u2B00-\u2BFF\u{1F000}-\u{1FAFF}][\uFE0E\uFE0F]?(?:\u200D[\u00A9\u00AE\u203C\u2049\u2122\u2139\u2300-\u23FF\u2600-\u27BF\u2B00-\u2BFF\u{1F000}-\u{1FAFF}][\uFE0E\uFE0F]?)*|[\uFE0E\uFE0F\u200D\u20E3\u{E0100}-\u{E01EF}])/gu;
+
 // 清理 Markdown 标记，避免被朗读
 function stripMarkdown(input) {
   if (!input) return '';
@@ -107,6 +110,8 @@ function stripMarkdown(input) {
   text = text.replace(/\\([*_`\[\]()>#+\-])/g, '$1');
   // 11) 剩余孤立 Markdown 符号清理（避免误删 HTML/比较符号，不处理 '>'）
   text = text.replace(/[#*_`]+/g, '');
+  // Skip emoji-style icons before whitespace normalization.
+  text = text.replace(emojiIconPattern, '');
   // 12) 多空白合并
   text = text.replace(/[\t\f\v]+/g, ' ');
   text = text.replace(/\s{2,}/g, ' ');

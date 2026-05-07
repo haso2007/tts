@@ -159,56 +159,121 @@ func (p *SSMLProcessor) EscapeSSML(ssml string) string {
 	return escapedContent
 }
 
-// StripMarkdown 清理 Markdown 标记，避免在语音中被朗读
+// stripEmojiIcons removes emoji-style icons that TTS engines tend to read aloud.
+func stripEmojiIcons(input string) string {
+	if input == "" {
+		return ""
+	}
+
+	runes := []rune(input)
+	var builder strings.Builder
+	builder.Grow(len(input))
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		if isKeycapStart(r) {
+			if i+2 < len(runes) && isVariationSelector(runes[i+1]) && runes[i+2] == '\u20e3' {
+				i += 2
+				continue
+			}
+			if i+1 < len(runes) && runes[i+1] == '\u20e3' {
+				i++
+				continue
+			}
+		}
+
+		if isEmojiIconRune(r) || isEmojiModifierRune(r) || isVariationSelector(r) || r == '\u200d' || r == '\u20e3' {
+			continue
+		}
+
+		builder.WriteRune(r)
+	}
+
+	return builder.String()
+}
+
+func isKeycapStart(r rune) bool {
+	return (r >= '0' && r <= '9') || r == '#' || r == '*'
+}
+
+func isVariationSelector(r rune) bool {
+	return (r >= '\ufe00' && r <= '\ufe0f') || (r >= '\U000e0100' && r <= '\U000e01ef')
+}
+
+func isEmojiModifierRune(r rune) bool {
+	return r >= '\U0001f3fb' && r <= '\U0001f3ff'
+}
+
+func isEmojiIconRune(r rune) bool {
+	switch {
+	case r == '\u00a9' || r == '\u00ae' || r == '\u203c' || r == '\u2049' || r == '\u2122' || r == '\u2139':
+		return true
+	case r >= '\u2300' && r <= '\u23ff':
+		return true
+	case r >= '\u2600' && r <= '\u27bf':
+		return true
+	case r >= '\u2b00' && r <= '\u2bff':
+		return true
+	case r >= '\U0001f000' && r <= '\U0001faff':
+		return true
+	default:
+		return false
+	}
+}
+
+// StripMarkdown removes Markdown and icon markers before SSML escaping.
 func (p *SSMLProcessor) StripMarkdown(input string) string {
-    if input == "" {
-        return ""
-    }
+	if input == "" {
+		return ""
+	}
 
-    text := input
+	text := input
 
-    // 1) 代码块 ``` ```
-    text = regexp.MustCompile("(?s)```[\\s\\S]*?```").ReplaceAllString(text, "")
-    // 2) 行内代码 `code`
-    text = regexp.MustCompile("`[^`]*`").ReplaceAllString(text, "")
-    // 3) 标题 #, ##, ### 前缀
-    text = regexp.MustCompile("(?m)^\\s{0,3}#{1,6}\\s+").ReplaceAllString(text, "")
-    // 4) 列表标记 -, *, + 开头
-    text = regexp.MustCompile("(?m)^\\s*[-*+]\\s+").ReplaceAllString(text, "")
-    // 6) 加粗/斜体 **text** *text* __text__ _text_
-    text = regexp.MustCompile("\\*\\*([^*]+)\\*\\*").ReplaceAllString(text, "$1")
-    text = regexp.MustCompile("\\*([^*]+)\\*").ReplaceAllString(text, "$1")
-    text = regexp.MustCompile("__([^_]+)__").ReplaceAllString(text, "$1")
-    text = regexp.MustCompile("_([^_]+)_").ReplaceAllString(text, "$1")
-    // 7) 链接与图片 [text](url) ![alt](url)
-    text = regexp.MustCompile("!\\[[^\\]]*\\]\\([^\\)]*\\)").ReplaceAllString(text, "")
-    text = regexp.MustCompile("\\[([^\\]]+)\\]\\(([^\\)]+)\\)").ReplaceAllString(text, "$1")
-    // 7.1) HTML 链接 <a href="...">text</a> 保留可读文本，去掉标签与URL
-    text = regexp.MustCompile(`(?is)<a\s+[^>]*href=("|')[^"']+("|')[^>]*>(.*?)</a>`).ReplaceAllString(text, "$3")
-    // 7.2) HTML 图片直接移除
-    text = regexp.MustCompile(`(?is)<img\s+[^>]*>`).ReplaceAllString(text, "")
-    // 7.3) 自动链接 <https://...>
-    text = regexp.MustCompile(`(?i)<https?://[^>\s]+>`).ReplaceAllString(text, "")
-    text = regexp.MustCompile(`(?i)<www\.[^>\s]+>`).ReplaceAllString(text, "")
-    // 7.4) 纯 URL（http/https/ftp 或 www 开头）
-    text = regexp.MustCompile(`(?i)\b(?:https?://|ftp://|www\.)[^\s<)]+`).ReplaceAllString(text, "")
-    // 7.5) 域名路径（example.com/.. 等常见顶级域名）
-    text = regexp.MustCompile(`(?i)\b(?:[a-z0-9-]+\.)+(?:com|org|net|edu|gov|io|ai|cn|xyz|top|info|me|site|club|dev|app|tech|tv|gg|so|uk|jp|de|fr|au|ca|us|hk|sg)(?:/[\S]*)?`).ReplaceAllString(text, "")
-    // 7.6) 邮箱
-    text = regexp.MustCompile(`(?i)\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b`).ReplaceAllString(text, "")
-    // 8) 引用行 >
-    text = regexp.MustCompile(`(?m)^\s*>+\s?`).ReplaceAllString(text, "")
-    // 9) 水平线 --- *** ___
-    text = regexp.MustCompile(`(?m)^\s*(?:-{3,}|\*{3,}|_{3,})\s*$`).ReplaceAllString(text, "")
-    // 10) 转义反斜杠 \\*
-    text = regexp.MustCompile("\\\\([*_`\\\\\\[\\\\\\]()>#+\\-])").ReplaceAllString(text, "$1")
-    // 11) 剩余孤立 Markdown 符号清理（避免误删 HTML/比较符号，不处理 '>'）
-    text = regexp.MustCompile("[#*_`]+").ReplaceAllString(text, "")
-    // 12) 多空白合并
-    text = regexp.MustCompile(`[\t\f\v]+`).ReplaceAllString(text, " ")
-    text = regexp.MustCompile(`\s{2,}`).ReplaceAllString(text, " ")
-    // 13) 多个空行压缩
-    text = regexp.MustCompile(`\n{3,}`).ReplaceAllString(text, "\n\n")
+	// 1) 代码块 ``` ```
+	text = regexp.MustCompile("(?s)```[\\s\\S]*?```").ReplaceAllString(text, "")
+	// 2) 行内代码 `code`
+	text = regexp.MustCompile("`[^`]*`").ReplaceAllString(text, "")
+	// 3) 标题 #, ##, ### 前缀
+	text = regexp.MustCompile("(?m)^\\s{0,3}#{1,6}\\s+").ReplaceAllString(text, "")
+	// 4) 列表标记 -, *, + 开头
+	text = regexp.MustCompile("(?m)^\\s*[-*+]\\s+").ReplaceAllString(text, "")
+	// 6) 加粗/斜体 **text** *text* __text__ _text_
+	text = regexp.MustCompile("\\*\\*([^*]+)\\*\\*").ReplaceAllString(text, "$1")
+	text = regexp.MustCompile("\\*([^*]+)\\*").ReplaceAllString(text, "$1")
+	text = regexp.MustCompile("__([^_]+)__").ReplaceAllString(text, "$1")
+	text = regexp.MustCompile("_([^_]+)_").ReplaceAllString(text, "$1")
+	// 7) 链接与图片 [text](url) ![alt](url)
+	text = regexp.MustCompile("!\\[[^\\]]*\\]\\([^\\)]*\\)").ReplaceAllString(text, "")
+	text = regexp.MustCompile("\\[([^\\]]+)\\]\\(([^\\)]+)\\)").ReplaceAllString(text, "$1")
+	// 7.1) HTML 链接 <a href="...">text</a> 保留可读文本，去掉标签与URL
+	text = regexp.MustCompile(`(?is)<a\s+[^>]*href=("|')[^"']+("|')[^>]*>(.*?)</a>`).ReplaceAllString(text, "$3")
+	// 7.2) HTML 图片直接移除
+	text = regexp.MustCompile(`(?is)<img\s+[^>]*>`).ReplaceAllString(text, "")
+	// 7.3) 自动链接 <https://...>
+	text = regexp.MustCompile(`(?i)<https?://[^>\s]+>`).ReplaceAllString(text, "")
+	text = regexp.MustCompile(`(?i)<www\.[^>\s]+>`).ReplaceAllString(text, "")
+	// 7.4) 纯 URL（http/https/ftp 或 www 开头）
+	text = regexp.MustCompile(`(?i)\b(?:https?://|ftp://|www\.)[^\s<)]+`).ReplaceAllString(text, "")
+	// 7.5) 域名路径（example.com/.. 等常见顶级域名）
+	text = regexp.MustCompile(`(?i)\b(?:[a-z0-9-]+\.)+(?:com|org|net|edu|gov|io|ai|cn|xyz|top|info|me|site|club|dev|app|tech|tv|gg|so|uk|jp|de|fr|au|ca|us|hk|sg)(?:/[\S]*)?`).ReplaceAllString(text, "")
+	// 7.6) 邮箱
+	text = regexp.MustCompile(`(?i)\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b`).ReplaceAllString(text, "")
+	// 8) 引用行 >
+	text = regexp.MustCompile(`(?m)^\s*>+\s?`).ReplaceAllString(text, "")
+	// 9) 水平线 --- *** ___
+	text = regexp.MustCompile(`(?m)^\s*(?:-{3,}|\*{3,}|_{3,})\s*$`).ReplaceAllString(text, "")
+	// 10) 转义反斜杠 \\*
+	text = regexp.MustCompile("\\\\([*_`\\\\\\[\\\\\\]()>#+\\-])").ReplaceAllString(text, "$1")
+	// 11) 剩余孤立 Markdown 符号清理（避免误删 HTML/比较符号，不处理 '>'）
+	text = regexp.MustCompile("[#*_`]+").ReplaceAllString(text, "")
+	// Skip emoji-style icons before whitespace normalization.
+	text = stripEmojiIcons(text)
+	// 12) 多空白合并
+	text = regexp.MustCompile(`[\t\f\v]+`).ReplaceAllString(text, " ")
+	text = regexp.MustCompile(`\s{2,}`).ReplaceAllString(text, " ")
+	// 13) 多个空行压缩
+	text = regexp.MustCompile(`\n{3,}`).ReplaceAllString(text, "\n\n")
 
-    return strings.TrimSpace(text)
+	return strings.TrimSpace(text)
 }
